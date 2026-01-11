@@ -1,0 +1,572 @@
+---
+title: "CC2_ADM"
+author: "Chloé Eudier"
+date: "2026-01-12"
+output: github_document
+---
+
+
+# Introduction
+
+### Dans le cadre d'un programme de préservation des populations tortues vertes (Chelonia mydas) peuplant la mer de Chine du Sud, il a été envisagé d'introduire des tortues élevées en captivité au sein du milieu sauvage. Le microbiote des tortues étant toutefois énormément influencé par les conditions d'évolution de celles-ci, des chercheurs ont analysé et comparé le microbiote de tortues sauvages et issues d'environnement artificiel. Cela avait pour objectif de vérifier que ces tortues ne risquent pas de représenter un danger pour les tortues sauvages dans le cas d'une introduction dans la nature.
+
+
+# Matériel et Méthodes
+
+### Des échantillons provenant de 14 tortues élevées en captivité et de 6 tortues sauvages ont été récoltés avant extraction de l'ADN puis l'amplification de la région variable V3-V4 de l’ARNr 16S des bactéries s'y trouvant et enfin le séquençage des amplicons obtenus après purification.
+### Les données de séquençage doivent ensuite être traitées afin de pouvoir être utilisées pour effectuer des analyses statistiques et répondre à la problématique.
+
+
+# Traitement des données et résultats/discussion
+
+
+## Chargement des données
+
+#### Chargement de la librarie dada2 pour utiliser les commandes nécessaires à l’analyse de données de séquençage.
+
+```{r}
+library(dada2)
+packageVersion("dada2")
+```
+
+
+#### Chargement des données et création de la variable path pour indiquer le chemin d’accès aux lectures utilisées.
+
+```{r}
+path<-"~/ADM-CC2/DATA"
+list.files(path)
+```
+
+#### Lecture du nom des fichiers et création d'une liste des lectures forward (fnFS) et reverse (fnRs) par la manipulation de leur chaîne de caractères variables.
+
+```{r}
+fnFs <- sort(list.files(path, pattern="_1.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_2.fastq", full.names = TRUE))
+```
+
+#### Création d'une variable afin d'extraire le nom des échantillons auxquels appartiennent les couples de lectures.
+
+```{r}
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+```
+
+
+
+## Etude des profils de qualité
+
+#### Visualisation de la qualité de chaque séquence forward (fwd) grâce au score qualité de chaque nucléotide la composant.
+
+```{r}
+plotQualityProfile(fnFs[1:2]) 
+```
+
+##### On obtient une heat map nous indiquant la fréquence de chaque score de qualité pour chaque position. Sur les graphiques on observe le score de qualité moyen par la ligne verte, les quartiles de la distributions des scores par les lignes oranges et la proportion des lectures allant jusqu’à au moins cette position.
+
+##### On peut observer que les séquences fwd sont de bonnes qualité en regardant la ligne verte et les lignes oranges qui se maintiennent à un score entre 30 et 40. La qualité diminue cependant sur les dernières bases des séquences donc il faudra couper les 30 derniers nucléotides des séquences (à partir de la position 270) pour augmenter le score et garder un maximum d'échantillons lors du filtrage.
+
+
+#### Visualisation de la qualité de chaque séquence reverse (rs) grâce au score qualité de chaque nucléotide la composant.
+
+```{r}
+plotQualityProfile(fnRs[1:2])
+```
+##### En revanche, on observe que les séquences rs sont de moins bonne qualité. Il faudra les couper à partir de la position 220 qui est celle à partir de laquelle la qualité des séquences chute.
+
+##### Cela permet de ne pas sse retrouver avec des échantillons n'ayant aucune reads une fois les prochaines étapes effectuées.
+
+
+
+
+## Tronquage et Filtrage
+
+#### Création d'objets (filtFs et filtRs) servant à stocker les séquences filtrées et dont les noms sont rattachés à ceux des échantillons.
+
+```{r}
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+#### Filtrage des données en jouant sur différents paramètres de sorte à obtenir un meilleur score de qualité de séquence.
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = c(270,220),
+              trimLeft = c(0,0), maxN=0, maxEE=c(2,5), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=FALSE)
+head(out)
+```
+
+##### Grâce à cet outil, une petite partie des séquences a été retirée pour augmenter le score de qualité de celles-ci. Donc comme expliqué précédemment, les séquences fwd ont été coupées sur les 30 derniers nucléotides et les rs sur les 80 derniers car le score de qualité des bases a chuté bien avant. On obtient ainsi la liste des lectures avant et après filtrage.
+
+
+
+
+## Aprentissage des taux d'erreurs
+
+### Estimation du nombre d'erreurs de séquençage dans les échantillons pour différencier les séquences mutées de celles erronées. Le modèle d'erreurs est calculé en alternant l'estimation des taux d'erreur et l'inférence de la composition de l'échantillon jusqu'à ce qu'ils convergent vers une solution cohérente.
+
+
+#### Nombre de bases utilisées par le modèle pour les séquences fwd
+
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+```
+
+#### Nombre de bases utilisées par le modèle pour les séquences rs
+
+```{r}
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+
+#### Visualisation des erreurs estimées (pour chaque transition de base possible).
+
+```{r}
+plotErrors(errF, nominalQ=TRUE)
+```
+
+
+##### Les taux d’erreurs observés pour chaque score de qualité sont représentés par un point noir. La ligne noire indique les taux d’erreur estimés après convergence de l’algorithme d’apprentissage automatique. La ligne rouge indique les taux d’erreur attendus selon la définition nominale du score de qualité.
+
+##### Comme il est possible de le voir sur les graphiques, certains taux d’erreurs estimés correspondent aux taux observés car les points noirs suivent la ligne rouge pour quelques transitions. Cependant pour d'autres transitions il y'a beaucoup moins de correspondance puisqu'on observe que les points sont dispersés et que la ligne noire ne suit pas tout à fait à la rouge. Mais dans l'ensemble on peut dire que les taux d’erreurs diminuent avec l’augmentation de la qualité.
+
+
+
+
+## Inférence des échantillons
+
+### Détection des inférences dans les séquences filtrées afin de différencier les vraies séquences biologiques (variants biologiques) des erreurs de séquençage en utilisant un modèle d'erreurs paramétrique.
+
+#### Inférences dans les séquences fwd filtrées
+
+```{r}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+```
+
+#### Inférences dans les séquences rs filtrées
+
+```{r}
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+```
+
+#### Evaluation du nombre d’ASVs dans l’échantillon n°1
+
+``` {r}
+dadaFs[[1]]
+```
+
+##### L’algorithme a trouvé 887 variants de séquence réels à partir des 19440 séquences du premier échantillon.
+
+
+
+
+## Fusion des séquences paires
+
+### Fusion des séquences R1 et R2 pour obtenir les amplicons en entier et observer leur fiabilité. Pour que la fusion se fasse, il faut que les séquences se chevauchent sur au moins 12 nucléotides identiques entre les 2 séquences.
+
+```{r}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+head(mergers[[1]])
+```
+
+##### On obtient ainsi la liste de données pour chaque échantillon qui comprend : la séquence entière, son abondance et les indices de variants de séquence (ASV) fwd et rs qui ont été fusionnées. De plus, les lectures appariées qui ne se chevauchaient pas exactement ont été supprimées pour réduire le risque de résultats erronés.
+
+
+
+
+## Création d'une table d'ASV
+
+### Construction d'une table d'ASV pour observer l'abondance des séquences dans les échantillons
+
+#### Evaluation du nombre d'ASV parmi l'ensemble des échantillons
+
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+```
+
+#### Etude de la distribution de la longueur des séquences
+
+```{r}
+table(nchar(getSequences(seqtab)))
+```
+
+##### Comme on peut le voir dans le tableau, on obtient 52206 ASVs de différentes longueurs parmi les 20 échantillons. Le nombre de nucléotides dans les séquences est indiqué en haut et le nombre de ses séquences en bas. Par exemple, on trouve une séquence avec 270 nucléotides.
+
+
+
+
+
+## Eliminitaion des ASVs chimériques
+
+### Suppression des ASVs chimériques (séquences non biologiques). Les séquences chimériques sont identifiées si elles peuvent être reconstruites exactement en combinant un segment gauche et un segment droit provenant de deux séquences « parentales » plus abondantes.
+
+#### Identification du nombre d'ASVs chimériques
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+```
+
+
+##### Ici,il y’a 44021 ASVs qui sont en réalité des chimères sur les 52206 trouvées précédemment.
+
+
+#### Evaluation de la proportion des chimères parmi l'ensemble ASVs
+
+```{r}
+sum(seqtab.nochim)/sum(seqtab)
+```
+##### Les chimères représentent donc environ 87 % des variants de séquences fusionnées, mais si l’abondance de ces variants est prise en compte, les chimères représentent environ 43 % des lectures de séquence fusionnées puisque 53 % des séquences ont été conservées.
+
+
+### Exportation de la table ASV pour création de l'objet phyloseq
+
+```{r}
+asv_table <- t(seqtab.nochim) 
+write.table(asv_table,
+            file="table_ASV.tsv",
+            sep="\t",
+            quote=FALSE,
+            col.names=NA)
+
+```
+
+
+
+
+## Tableau de suivi
+
+#### Observation du nombre de séquences éliminées à chaque étape pour voir si un maximum de lectures présentent au départ ont été conservées
+
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+##### Une grande majorité des séquences a été conservée ce qui indique qu’il n’y a pas de problèmes.
+
+
+
+
+## Assigniation taxonomique des séquences
+
+#### Assigniation de taxonomie pour chaque séquences afin d'obtenir des informations sur les différents rangs (Domaine jusqu'à l'espèce si c'est possible) par la comparaison avec des séquences de référence connues
+
+```{r}
+taxa <- assignTaxonomy(seqtab.nochim,"~/CC2-ADM/silva_nr99_v138.2_toSpecies_trainset.fa.gz?download=1", multithread=TRUE)
+```
+
+#### Affichage des résultats de l'assignation
+
+```{r}
+taxa.print <- taxa 
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+##### La majorité des séquences des différents échantillons ont été assignées au phylum des Pseudomonadota et des Fusobecteriota. Dans le cas où l’outil ne peut pas assigner précisement des séquences à une espèce spécifique, il va seulement l’assigner aux rangs supérieurs tels que le genre ou la famille.
+
+
+#### Exportation de la table de taxonomie pour création de l'objet phyloseq
+
+```{r}
+write.table(taxa.print,
+            "Table_taxo.tsv",
+            sep = "\t",
+            quote = FALSE,
+            col.names = NA)
+```
+
+
+
+
+## Installation du package phyloseq
+
+```{r}
+source("https://raw.githubusercontent.com/joey711/phyloseq/master/inst/scripts/installer.R", local = TRUE)
+```
+
+## Chargement de la librairie phyloseq
+
+```{r}
+library(phyloseq)
+```
+
+
+
+## Lecture des différentes tables et définition des différents paramètres phyloseq
+
+#### Table ASV
+
+```{r}
+ASV <- read.table("table_ASV.tsv",
+                  sep="\t",
+                  header=TRUE,
+                  row.names=1,
+                  check.names=FALSE)
+asv <- otu_table(as.matrix(ASV), taxa_are_rows = TRUE)
+```
+
+
+#### Table de taxonomie
+
+```{r}
+tax <- read.table("Table_taxo.tsv",
+                  sep="\t",
+                  header=TRUE,
+                  row.names=1)
+
+tax <- tax_table(as.matrix(tax))
+```
+
+
+#### Synchonisation des données : on donne les séquences ADN comme noms de lignes à la taxonomie en vérifiant que les tables ont bien le même nombre de lignes 
+
+```{r}
+if (nrow(asv) == nrow(tax)) {
+    rownames(tax) <- rownames(asv)
+    print("Succès : Les noms de la taxonomie ont été synchronisés avec les séquences.")
+} else {
+    stop("Erreur : Le nombre de lignes ne correspond pas entre ASV et Taxonomie.")
+}
+```
+
+#### Table de métadonnées
+
+```{r}
+meta <- read.csv("~/ADM-CC2/Métadonnées.csv",
+                 sep=";",
+                 header=TRUE)
+
+# Correspondance entre la colonne Run et les noms d’échantillons
+
+row.names(meta) <- meta$Run  
+
+sample <- sample_data(meta)
+```
+
+
+
+## Construction de l'objet phyloseq
+
+```{r}
+ps <- phyloseq(asv, tax, sample)
+
+ps
+```
+
+
+#### Nettoyage : Retirer Mitochondries et Chloroplastes (souvent présents chez les tortues)
+
+```{r}
+ps <- subset_taxa(ps, Family != "Mitochondria" & Order != "Chloroplast")
+```
+
+
+
+## Analyses de données
+
+
+#### Regroupement des échantillons en 2 groupes : Wild Type (WT) et Artificial (AC)
+
+```{r}
+metadata <- data.frame(sample_data(ps))
+metadata$Group[grepl("Wild", metadata$Sample.Name, ignore.case = TRUE)] <- "WT"
+metadata$Group[grepl("Artificial", metadata$Sample.Name, ignore.case = TRUE)]<-"AC"
+meta$Group <- ifelse(grepl("Wild", metadata$Sample.Name, ignore.case = TRUE), "WT", "AC")
+sample_data(ps) <- sample_data(metadata)
+table(sample_data(ps)$Group)
+```
+
+
+#### Raréfaction des données nécessaire pour effectuer les analyses
+
+```{r}
+set.seed(123)
+ps_rar <- rarefy_even_depth(
+  ps,
+  sample.size = min(sample_sums(ps)),
+  rngseed = 123,
+  replace = FALSE,
+  verbose = FALSE
+)
+```
+
+
+##### Grâce à cette étape, les échantillons ont été classés en 2 groupes de tortues en fonction de leur appelation dans la table de métadonnées (Wild ou Artificial) correspondant aux tortues sur lesquelles ils ont été prélévés. Cela permet de comparer la richesse et la diversité des microbiotes des tortues sauvages et élevées en milieu artificiel.
+
+
+
+
+## Indices d'alpha diversité 
+
+
+#### Chargement des librairies nécessaire à la construction de figures 
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+```
+
+### Indice de Shannon
+
+```{r}
+plot_richness(ps_rar, x="Group", measures=c("Shannon")) + # Test de Shannon à parrir des données raréfiées
+  geom_boxplot(aes(fill=Group), alpha=0.7) + # Données sous forme de boite à moustaches
+  scale_fill_manual(values = c("WT" = "#00AFBB", "AC" = "#E7B800")) + # Couleurs de chaque groupe
+  theme_bw() +
+  stat_compare_means(method = "wilcox.test", label = "p.signif") + # Test statistique de l'article
+  labs(title = "Comparaison de la diversité : WT vs AC", x = "Groupe de Tortues", y = "Indice de Shannon") # Titre données aux axes
+```
+
+##### Comme on peut le voir sur le graphique ci-dessus, les échantillons du microbiote des tortues élevées en captivité (AC) ont un indice de Shannon plus faible que ceux des tortues sauvages (WT) traduisant une plus faible diversité bactérienne chez celles-ci. 
+
+
+### Indice de Chao1
+
+```{r}
+plot_richness(ps_rar, x="Group", measures=c("Chao1")) + # Test de Chao1 à parrir des données raréfiées
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  scale_fill_manual(values = c("WT" = "#00AFBB", "AC" = "#E7B800")) +
+  theme_bw() +
+  stat_compare_means(method = "wilcox.test", label = "p.signif") + 
+  labs(title = "Comparaison de la richesse : WT vs AC", x = "Groupe de Tortues", y = "Indice de Chao1")
+```
+
+##### On observe la même chose que précédemment, les AC ont un indice de Chao1 plus faible que les WT, ce qui signifie que leur microbiote est moins riche.
+
+##### Les 2 indices d'alpha diversité permettent donc d'affirmer que les WT ont un microbiote bien plus riche et diversifié et donc plus stable que les AC dont le microbiote semble appauvri et déséquilibré.
+
+
+
+
+## Beta diversité 
+
+#### Transformation des données en abondance relative
+
+```{r}
+ps_gen <- tax_glom(ps, "Genus")
+ps_rel <- transform_sample_counts(ps_gen, function(x) x/sum(x))
+ps_rel
+```
+
+
+#### Calcul de la matrice de distance de Bray-Curtis et de l'ordination (PCoA)
+
+```{r}
+dist_matrix <- distance(ps_rel, method = "bray")
+pcoa_res <- ordinate(ps_rel, method = "PCoA", distance = dist_matrix)
+```
+
+#### Tracé du graphique
+
+```{r}
+plot_ordination(ps_rel, pcoa_res, color = "Group") +
+  geom_point(size = 4, alpha = 0.8) + # Paramètres des points sur le graphique (taille, opacité)
+  stat_ellipse(aes(fill = Group), geom = "polygon", alpha = 0.1, level = 0.95) + # Ajout des ellipses de groupe en calculant la zone de confiance autour de chaque point
+  scale_fill_manual(values = c("WT" = "#00AFBB", "AC" = "#E7B800")) +
+  theme_classic() + 
+  labs(title = "PCoA basée sur la distance de Bray-Curtis",
+    subtitle = "Structure des communautés microbiennes (WT vs AC)",
+    x = paste0("PCo1 [", round(pcoa_res$values$Relative_eig[1] * 100, 1), "%]"),
+    y = paste0("PCo2 [", round(pcoa_res$values$Relative_eig[2] * 100, 1), "%]")
+  ) # Attribution du score de variance des axes
+```
+
+##### Ici on remarque dans un premier temps que les points de chaque groupes de tortues sont proches donc que les tortues sauvages ont des communautés microbiennes similaires entre elles et idem pour les tortues élevées en captivité. Cepedant, comme cela est visible sur la PCoA, les communautés des 2 types de tortues forment des groupes bien distincts, ce qui signifie que le microbiote des tortues est complètement différent en fonction de l'environnement dans lequel elle se trouvent.
+
+
+
+### Test Permanova
+
+```{r}
+library(vegan)
+
+# Extraire les métadonnées de l'objet phyloseq
+metadata <- data.frame(sample_data(ps_rel))
+
+# Test de PERMANOVA
+permanova <- adonis2(dist_matrix ~ Group, data = metadata, permutations = 999)
+
+# Afficher le résultat (cherchez la valeur de Pr(>F))
+print(permanova)
+```
+
+##### Grâce à ce test, il est possible d'affirmer que la composition du microbiote des WT et AC est significativement différente puisqu'on obtient un p-value inférieur à 0,05.
+
+
+
+
+## Taxonomie
+
+### Abondance relative des phyla
+
+```{r}
+library(tidyverse)
+ps_phylum <- tax_glom(ps_rel, taxrank = "Phylum")
+df_phylum <- psmelt(ps_phylum)
+top10_phyla <- df_phylum %>%
+  group_by(Phylum) %>%
+  summarize(mean_abund = sum(Abundance)) %>%
+  arrange(desc(mean_abund)) %>%
+  slice(1:10) %>% pull(Phylum)
+df_phylum <- df_phylum %>%
+  mutate(Phylum = fct_other(Phylum, keep = top10_phyla, other_level = "Others")) # rajoute une catégorie autres pour regrouper le reste des phyla
+df_grouped <- df_phylum %>%
+  group_by(Group, Phylum) %>%
+  summarize(Abundance = mean(Abundance))
+ggplot(df_grouped, aes(x = Group, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(10, "Paired"), "grey80")) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  theme_classic() +
+  labs(title = "Composition taxonomique relative (Top 10 Phyla)",
+       y = "Abondance Relative (%)",
+       x = "Groupe de Tortues")
+```
+
+##### On observe une forte abondance des phyla Pseudomonadota et Bacteroidata chez les 2 groupes mais aussi une abondance de Fusobacteriota, un phylum abritant des bactéries potentiellement pathogènes, chez les AC.
+
+
+### Abondance relative des genres 
+
+```{r}
+ps_genus <- tax_glom(ps_rel, taxrank = "Genus")
+df_genus <- psmelt(ps_genus)
+top10_genera <- df_genus %>%
+  group_by(Genus) %>%
+  summarize(mean_abund = sum(Abundance)) %>%
+  arrange(desc(mean_abund)) %>%
+  slice(1:10) %>%
+  pull(Genus)
+df_genus <- df_genus %>%
+  mutate(Genus = fct_other(Genus, keep = top10_genera, other_level = "Others")) # rajoute une catégorie autres pour regrouper le reste des genres
+df_grouped_gen <- df_genus %>%
+  group_by(Group, Genus) %>%
+  summarize(Abundance = mean(Abundance)) %>%
+  ungroup()
+ggplot(df_grouped_gen, aes(x = Group, y = Abundance, fill = Genus)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.6) +
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Paired"), 
+                               RColorBrewer::brewer.pal(4, "Set3"))) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  theme_classic() +
+  labs(title = "Composition taxonomique par Groupe (Top 10 Genres)",
+       y = "Abondance Relative (%)",
+       x = "Groupe de Tortues") +
+  theme(legend.text = element_text(face = "italic"),
+        axis.text = element_text(size = 12, color = "black")) # met les genres en italique et règle les paramètres de la légende
+```
+
+##### On retrouve des espèces typiques de environnements marins chez WT comme Nautella et Aliroseovarius qui sont connus pour avoir un effet bénéfique sur la santé des tortues tandis que chez les AC on retrouve des bactéries du genre Paracoccus ou encore Fusobacterium qui sont des pathogènes responsables de diverses inflammations. Ce graphique permet de confirmer que les 2 types de tortues abritent des genres bactériens très différents et met en évidence un potentiel danger des AC pour les WT.
+
+
+
+# Conclusion
+
+### Les analyses effectuées ont permis de montrer que les tortues sauvages et élevées en environnement artificiel ont des microbiotes de composition significativement différentes. En effet, tandis les tortues sauvages ont un microbiote riche, diversifié et équilibré abritant des bactéries typiques des environnements marins et bénéfiques pour leur santé. Au contraire, les tortues élevées ont un microbiote déséquilibré et peuplé de bactéries considérées comme des agents pathogènes. Ainsi, relacher ces tortues parmi les populations sauvages pourrait leur transmettre des bactéries susceptibles de perturber leur microbiote et donc de les mettre en danger en les exposant aux infections par d'autres pathogènes. Pour que ce plan de réintroduction soit envisageable, il serait judicieux de commencer par étudier les paramètres de environnements sauvages pour essayer d'adapter les conditions artificielles et réguler le microbiote des tortues élevées.
+
+
