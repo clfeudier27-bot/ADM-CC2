@@ -2,8 +2,7 @@
 title: Analyse du Microbiote Intestinal des Tortues Vertes (Chelonia mydas) 
 output:
   github_document:
-    theme: flatly       
-    highlight: tango
+    theme: jekyll-theme-cayma      
 ---
 
 ## Ce projet présente une analyse comparative de la diversité bactérienne entre les tortues sauvages et d'élevage, en suivant la pipeline **DADA2** et **Phyloseq** sous R.
